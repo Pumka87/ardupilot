@@ -36,14 +36,14 @@ jobs:
           $pattern = '(?m)^    float scaled_servos\[12\];\r?\n    for \(uint8_t i=0; i<ARRAY_SIZE\(scaled_servos\); i\+\+\) \{\r?\n        scaled_servos\[i\] = \(input\.servos\[i\] - 1000\) / 1000\.0f;\r?\n    \}'
 
           $replacement = @'
-    float scaled_servos[12] {};
-    for (uint8_t i=0; i<ARRAY_SIZE(scaled_servos); i++) {
-        if (input.servos[i] == 0) {
-            continue;
-        }
-        scaled_servos[i] = (input.servos[i] - 1000) / 1000.0f;
-    }
-'@
+          float scaled_servos[12] {};
+          for (uint8_t i=0; i<ARRAY_SIZE(scaled_servos); i++) {
+            if (input.servos[i] == 0) {
+               continue;
+            }
+          scaled_servos[i] = (input.servos[i] - 1000) / 1000.0f;
+          }
+          '@
 
           $patched = [System.Text.RegularExpressions.Regex]::Replace(
               $text,
