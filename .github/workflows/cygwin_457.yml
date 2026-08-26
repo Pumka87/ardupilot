@@ -1,0 +1,103 @@
+name: Cygwin Build Plane 4.5.7
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Configure Git line endings
+        shell: pwsh
+        run: git config --global core.autocrlf input
+
+      - name: Checkout Plane-4.5.7
+        uses: actions/checkout@v7
+        with:
+          ref: Plane-4.5.7
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install Cygwin
+        uses: cygwin/cygwin-install-action@v6
+        with:
+          install-dir: C:\cygwin
+          packages: >-
+            cygwin64
+            gcc-g++=10.2.0-1
+            ccache
+            python37
+            python37-future
+            python37-lxml
+            python37-pip
+            python37-setuptools
+            python37-wheel
+            git
+            procps
+            gettext
+          add-to-path: false
+
+      - name: Prepare Python environment
+        env:
+          PATH: /usr/bin:$(cygpath ${SYSTEMROOT})/system32
+        shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
+        run: >-
+          ln -sf /usr/bin/python3.7 /usr/bin/python &&
+          ln -sf /usr/bin/pip3.7 /usr/bin/pip &&
+          python --version &&
+          python -m pip install --progress-bar off empy==3.3.4 pexpect &&
+          python -m pip install --progress-bar off dronecan==1.0.26 &&
+          cp /usr/bin/ccache /usr/local/bin/ &&
+          cd /usr/local/bin &&
+          ln -sf ccache gcc &&
+          ln -sf ccache g++ &&
+          ln -sf ccache x86_64-pc-cygwin-gcc &&
+          ln -sf ccache x86_64-pc-cygwin-g++
+
+      - name: Prepare ccache
+        env:
+          PATH: /usr/bin:$(cygpath ${SYSTEMROOT})/system32
+        shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
+        run: >-
+          CYGPATH_GITHUB_WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE") &&
+          mkdir -p "${CYGPATH_GITHUB_WORKSPACE}/ccache" &&
+          mkdir -p /usr/local/etc &&
+          echo "export CCACHE_SLOPPINESS=file_stat_matches" > ~/ccache.conf &&
+          echo "export CCACHE_DIR=${CYGPATH_GITHUB_WORKSPACE}/ccache" >> ~/ccache.conf &&
+          echo "export CCACHE_BASEDIR=${CYGPATH_GITHUB_WORKSPACE}" >> ~/ccache.conf &&
+          echo "export CCACHE_COMPRESS=1" >> ~/ccache.conf &&
+          echo "export CCACHE_COMPRESSLEVEL=6" >> ~/ccache.conf &&
+          echo "export CCACHE_MAXSIZE=400M" >> ~/ccache.conf &&
+          source ~/ccache.conf &&
+          ccache -s
+
+      - name: Build Plane SITL
+        env:
+          PATH: /usr/bin:$(cygpath ${SYSTEMROOT})/system32
+        shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
+        run: >-
+          CYGPATH_GITHUB_WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE") &&
+          git config --global --add safe.directory "${CYGPATH_GITHUB_WORKSPACE}" &&
+          export PATH=/usr/local/bin:/usr/bin:$(cygpath ${SYSTEMROOT})/system32 &&
+          source ~/ccache.conf &&
+          python ./waf --color yes --toolchain x86_64-pc-cygwin --board sitl configure &&
+          python ./waf plane &&
+          mkdir -p artifacts &&
+          cp -v build/sitl/bin/arduplane artifacts/ArduPlane.elf.exe &&
+          cp -v build/sitl/bin/arduplane artifacts/ArduPlane.elf &&
+          git log -1 > artifacts/git.txt &&
+          cygcheck artifacts/ArduPlane.elf.exe |
+          grep -oP 'cyg[^\s\\/]+\.dll' |
+          while read -r dll; do cp -v "/usr/bin/$dll" artifacts/; done &&
+          ls -l artifacts/
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: Plane-4.5.7-Cygwin-SITL
+          path: artifacts
+          retention-days: 7
