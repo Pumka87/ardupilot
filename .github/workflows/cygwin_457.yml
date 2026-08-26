@@ -11,8 +11,14 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      # Workflow находится в master вашего fork,
-      # но исходники собираются строго из тега Plane-4.5.7.
+      # Рекомендация cygwin-install-action:
+      # не checkout'ить shell-скрипты с CRLF.
+      - name: Configure Git line endings
+        shell: pwsh
+        run: git config --global core.autocrlf input
+
+      # Сам workflow живёт в master вашего fork,
+      # но собираем строго официальный тег Plane-4.5.7.
       - name: Checkout Plane-4.5.7
         uses: actions/checkout@v7
         with:
@@ -20,128 +26,69 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      # Используем актуальную Cygwin-конфигурацию из текущего
-      # официального workflow ArduPilot.
+      # Пакеты взяты из актуального официального
+      # Cygwin workflow ArduPilot.
       - name: Install Cygwin
         uses: cygwin/cygwin-install-action@v6
         with:
-          packages: >-
-            cygwin64
-            gcc-g++=13.4.0-1
-            python312
-            python312-pip
-            git
-            procps
-            gettext
+          install-dir: C:\cygwin
+          packages: cygwin64 gcc-g++=13.4.0-1 python312 python312-pip git procps gettext
           add-to-path: false
 
-      - name: Check Cygwin environment
-        shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
-        run: |
-          echo "=== Cygwin ==="
-          uname -a
-
-          echo "=== Python executable ==="
-          ls -l /usr/bin/python3.12.exe
-          /usr/bin/python3.12.exe --version
-
-          echo "=== Pip ==="
-          /usr/bin/python3.12.exe -m pip --version
-
-          echo "=== Compiler ==="
-          /usr/bin/x86_64-pc-cygwin-g++ --version
-
-      # Это те же Python-пакеты, которые ставит текущий
-      # официальный Cygwin workflow ArduPilot.
+      # ВАЖНО: здесь и ниже run: >-, а не run: |
+      # Это предотвращает CRLF в скрипте Cygwin.
       - name: Prepare Python environment
+        env:
+          PATH: /usr/bin:$(cygpath ${SYSTEMROOT})/system32
         shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
-        run: |
-          /usr/bin/python3.12.exe -m pip install \
-            --progress-bar off \
-            empy==3.3.4 \
-            pexpect
+        run: >-
+          python3 --version &&
+          python3 -m pip --version &&
+          python3 -m pip install --progress-bar off empy==3.3.4 pexpect &&
+          python3 -m pip install --progress-bar off dronecan --upgrade
 
-          /usr/bin/python3.12.exe -m pip install \
-            --progress-bar off \
-            --upgrade \
-            dronecan
-
-      - name: Show source version
+      - name: Verify source version
+        env:
+          PATH: /usr/bin:$(cygpath ${SYSTEMROOT})/system32
         shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
-        run: |
-          WORKSPACE="$(cygpath -u "$GITHUB_WORKSPACE")"
-          git config --global --add safe.directory "$WORKSPACE"
-
-          echo "=== Checked out revision ==="
-          git describe --tags --always
+        run: >-
+          CYGPATH_GITHUB_WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE") &&
+          git config --global --add safe.directory "${CYGPATH_GITHUB_WORKSPACE}" &&
+          git describe --tags --always &&
           git log -1 --oneline
 
-      # Сборка Plane SITL непосредственно через waf.
-      # Не используем старый CI-wrapper и ccache: для одной
-      # диагностической сборки они не нужны.
       - name: Configure Plane SITL
+        env:
+          PATH: /usr/bin:$(cygpath ${SYSTEMROOT})/system32
         shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
-        run: |
-          export PATH="/usr/bin:$(cygpath "$SYSTEMROOT")/system32"
-
-          /usr/bin/python3.12.exe ./waf \
-            --color yes \
-            --toolchain x86_64-pc-cygwin \
-            --board sitl \
-            configure
+        run: >-
+          CYGPATH_GITHUB_WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE") &&
+          git config --global --add safe.directory "${CYGPATH_GITHUB_WORKSPACE}" &&
+          export PATH=/usr/bin:$(cygpath ${SYSTEMROOT})/system32 &&
+          python3 ./waf --color yes --toolchain x86_64-pc-cygwin --board sitl configure
 
       - name: Build ArduPlane
+        env:
+          PATH: /usr/bin:$(cygpath ${SYSTEMROOT})/system32
         shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
-        run: |
-          export PATH="/usr/bin:$(cygpath "$SYSTEMROOT")/system32"
+        run: >-
+          export PATH=/usr/bin:$(cygpath ${SYSTEMROOT})/system32 &&
+          python3 ./waf plane
 
-          /usr/bin/python3.12.exe ./waf plane
-
-      # Сначала специально выводим содержимое build/sitl/bin,
-      # чтобы в случае отличия имени старого бинарника это было
-      # сразу видно в логе.
-      - name: Collect binaries
+      - name: Prepare artifacts
+        env:
+          PATH: /usr/bin:$(cygpath ${SYSTEMROOT})/system32
         shell: C:\cygwin\bin\bash.exe -eo pipefail '{0}'
-        run: |
-          rm -rf artifacts
-          mkdir -p artifacts
-
-          echo "=== build/sitl/bin contents ==="
-          ls -lah build/sitl/bin
-
-          if [ -f build/sitl/bin/arduplane ]; then
-              PLANE_BIN="build/sitl/bin/arduplane"
-          elif [ -f build/sitl/bin/arduplane.exe ]; then
-              PLANE_BIN="build/sitl/bin/arduplane.exe"
-          else
-              echo "ERROR: ArduPlane executable not found"
-              find build -maxdepth 4 -type f \
-                \( -iname '*arduplane*' -o -iname '*plane*.exe' \) \
-                -print
-              exit 1
-          fi
-
-          echo "Using: $PLANE_BIN"
-
-          cp -v "$PLANE_BIN" artifacts/ArduPlane.elf.exe
-
-          git describe --tags --always > artifacts/version.txt
-          git log -1 > artifacts/git.txt
-
-          echo "=== Cygwin DLL dependencies ==="
-          cygcheck artifacts/ArduPlane.elf.exe || true
-
-          cygcheck artifacts/ArduPlane.elf.exe \
-            | grep -oE 'cyg[^ /\\]+\.dll' \
-            | sort -u \
-            | while read -r dll; do
-                if [ -f "/usr/bin/$dll" ]; then
-                    cp -v "/usr/bin/$dll" artifacts/
-                fi
-              done
-
-          echo "=== Artifact contents ==="
-          ls -lah artifacts
+        run: >-
+          rm -rf artifacts &&
+          mkdir artifacts &&
+          ls -la build/sitl/bin &&
+          cp -v build/sitl/bin/arduplane artifacts/ArduPlane.elf.exe &&
+          git describe --tags --always > artifacts/version.txt &&
+          git log -1 > artifacts/git.txt &&
+          cygcheck artifacts/ArduPlane.elf.exe > artifacts/cygcheck.txt &&
+          for dll in $(cygcheck artifacts/ArduPlane.elf.exe | grep -oP 'cyg[^\s\\/]+\.dll' | sort -u); do cp -v "/usr/bin/$dll" artifacts/; done &&
+          ls -la artifacts
 
       - name: Upload Plane 4.5.7 binaries
         uses: actions/upload-artifact@v7
