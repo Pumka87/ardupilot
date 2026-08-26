@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: runs-on: windows-2022
 
     steps:
       # Берём исходники именно ArduPlane 4.5.7,
