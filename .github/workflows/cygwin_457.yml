@@ -1,4 +1,4 @@
-name: Cygwin Build Plane 4.5.7
+name: Cygwin Build Plane 4.5.7 FlightAxis Patched
 
 on:
   workflow_dispatch:
@@ -11,12 +11,11 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      # Не позволяем Git конвертировать shell-файлы в CRLF.
       - name: Configure Git line endings
         shell: pwsh
         run: git config --global core.autocrlf input
 
-      # Берём строго официальный тег Plane-4.5.7.
+      # Берём строго официальный Plane-4.5.7
       - name: Checkout Plane-4.5.7
         uses: actions/checkout@v4
         with:
@@ -24,9 +23,49 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      # Среда максимально близка к оригинальному CI Plane 4.5.7.
-      # Python 3.7 уже недоступен, поэтому используем Python 3.9,
-      # для которого Cygwin всё ещё предоставляет готовые future/lxml.
+      # Compatibility patch:
+      # переносим только обработку нулевых servo outputs
+      # из нового SIM_FlightAxis в Plane 4.5.7.
+      - name: Patch FlightAxis servo outputs
+        shell: pwsh
+        run: |
+          $path = "libraries/SITL/SIM_FlightAxis.cpp"
+
+          $text = [System.IO.File]::ReadAllText($path)
+
+          $pattern = '(?m)^    float scaled_servos\[12\];\r?\n    for \(uint8_t i=0; i<ARRAY_SIZE\(scaled_servos\); i\+\+\) \{\r?\n        scaled_servos\[i\] = \(input\.servos\[i\] - 1000\) / 1000\.0f;\r?\n    \}'
+
+          $replacement = @'
+    float scaled_servos[12] {};
+    for (uint8_t i=0; i<ARRAY_SIZE(scaled_servos); i++) {
+        if (input.servos[i] == 0) {
+            continue;
+        }
+        scaled_servos[i] = (input.servos[i] - 1000) / 1000.0f;
+    }
+'@
+
+          $patched = [System.Text.RegularExpressions.Regex]::Replace(
+              $text,
+              $pattern,
+              $replacement
+          )
+
+          if ($patched -eq $text) {
+              throw "FlightAxis patch FAILED: expected Plane-4.5.7 code block was not found."
+          }
+
+          [System.IO.File]::WriteAllText(
+              $path,
+              $patched,
+              [System.Text.UTF8Encoding]::new($false)
+          )
+
+          Write-Host "=== FlightAxis patch applied ==="
+          git diff -- libraries/SITL/SIM_FlightAxis.cpp
+
+      # Та же Cygwin/Python 3.9 среда, на которой
+      # у вас уже успешно собралась Plane 4.5.7.
       - name: Install Cygwin
         uses: cygwin/cygwin-install-action@v6
         with:
@@ -68,7 +107,8 @@ jobs:
           CYGPATH_GITHUB_WORKSPACE=$(cygpath -u "$GITHUB_WORKSPACE") &&
           git config --global --add safe.directory "${CYGPATH_GITHUB_WORKSPACE}" &&
           git describe --tags --always &&
-          git log -1 --oneline
+          git log -1 --oneline &&
+          git diff -- libraries/SITL/SIM_FlightAxis.cpp
 
       - name: Configure Plane SITL
         env:
@@ -106,11 +146,12 @@ jobs:
           done &&
           git describe --tags --always > artifacts/version.txt &&
           git log -1 > artifacts/git.txt &&
+          git diff -- libraries/SITL/SIM_FlightAxis.cpp > artifacts/flightaxis_patch.diff &&
           ls -la artifacts
 
       - name: Upload Plane 4.5.7 binaries
         uses: actions/upload-artifact@v4
         with:
-          name: Plane-4.5.7-Cygwin-SITL
+          name: Plane-4.5.7-Cygwin-SITL-FlightAxis-Patched
           path: artifacts
           retention-days: 7
