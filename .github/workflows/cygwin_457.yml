@@ -26,42 +26,51 @@ jobs:
       # Compatibility patch:
       # переносим только обработку нулевых servo outputs
       # из нового SIM_FlightAxis в Plane 4.5.7.
-      - name: Patch FlightAxis servo outputs
+      - name: Patch FlightAxis diagnostics
         shell: pwsh
         run: |
           $path = "libraries/SITL/SIM_FlightAxis.cpp"
 
           $text = [System.IO.File]::ReadAllText($path)
+          $text = $text.Replace("`r`n", "`n")
 
-          $pattern = '(?m)^    float scaled_servos\[12\];\r?\n    for \(uint8_t i=0; i<ARRAY_SIZE\(scaled_servos\); i\+\+\) \{\r?\n        scaled_servos\[i\] = \(input\.servos\[i\] - 1000\) / 1000\.0f;\r?\n    \}'
-
-          $replacement = @'
-          float scaled_servos[12] {};
-          for (uint8_t i=0; i<ARRAY_SIZE(scaled_servos); i++) {
-            if (input.servos[i] == 0) {
-               continue;
-            }
-          scaled_servos[i] = (input.servos[i] - 1000) / 1000.0f;
-          }
+          $old = @'
+          void FlightAxis::exchange_data(const struct sitl_input &input)
+          {
+            if (!sock &&
           '@
 
-          $patched = [System.Text.RegularExpressions.Regex]::Replace(
-              $text,
-              $pattern,
-              $replacement
-          )
+          $new = @'
+          void FlightAxis::exchange_data(const struct sitl_input &input)
+          {
+            static uint16_t servo_debug_counter;
 
-          if ($patched -eq $text) {
-              throw "FlightAxis patch FAILED: expected Plane-4.5.7 code block was not found."
+            if (++servo_debug_counter >= 50) {
+              servo_debug_counter = 0;
+
+              printf("FA_SERVO: %u %u %u %u\n",
+               unsigned(input.servos[0]),
+               unsigned(input.servos[1]),
+               unsigned(input.servos[2]),
+               unsigned(input.servos[3]));
+            }
+
+            if (!sock &&
+          '@
+
+          if (-not $text.Contains($old)) {
+              throw "FlightAxis diagnostic patch FAILED: target block not found."
           }
+
+          $text = $text.Replace($old, $new)
 
           [System.IO.File]::WriteAllText(
               $path,
-              $patched,
+              $text,
               [System.Text.UTF8Encoding]::new($false)
           )
 
-          Write-Host "=== FlightAxis patch applied ==="
+          Write-Host "=== FlightAxis diagnostic patch applied ==="
           git diff -- libraries/SITL/SIM_FlightAxis.cpp
 
       # Та же Cygwin/Python 3.9 среда, на которой
