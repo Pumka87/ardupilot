@@ -1,4 +1,4 @@
-name: Cygwin Build Plane 4.5.7 FlightAxis Patched
+name: Cygwin Build Plane 4.5.7 FlightAxis Diagnostic
 
 on:
   workflow_dispatch:
@@ -15,7 +15,6 @@ jobs:
         shell: pwsh
         run: git config --global core.autocrlf input
 
-      # Берём строго официальный Plane-4.5.7
       - name: Checkout Plane-4.5.7
         uses: actions/checkout@v4
         with:
@@ -23,58 +22,67 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      # Compatibility patch:
-      # переносим только обработку нулевых servo outputs
-      # из нового SIM_FlightAxis в Plane 4.5.7.
       - name: Patch FlightAxis diagnostics
         shell: pwsh
         run: |
           $path = "libraries/SITL/SIM_FlightAxis.cpp"
 
-          $text = [System.IO.File]::ReadAllText($path)
-          $text = $text.Replace("`r`n", "`n")
+          $lines = [System.Collections.Generic.List[string]]::new()
 
-          $old = @'
-          void FlightAxis::exchange_data(const struct sitl_input &input)
-          {
-            if (!sock &&
-          '@
-
-          $new = @'
-          void FlightAxis::exchange_data(const struct sitl_input &input)
-          {
-            static uint16_t servo_debug_counter;
-
-            if (++servo_debug_counter >= 50) {
-              servo_debug_counter = 0;
-
-              printf("FA_SERVO: %u %u %u %u\n",
-               unsigned(input.servos[0]),
-               unsigned(input.servos[1]),
-               unsigned(input.servos[2]),
-               unsigned(input.servos[3]));
-            }
-
-            if (!sock &&
-          '@
-
-          if (-not $text.Contains($old)) {
-              throw "FlightAxis diagnostic patch FAILED: target block not found."
+          [System.IO.File]::ReadAllLines($path) | ForEach-Object {
+              [void]$lines.Add($_)
           }
 
-          $text = $text.Replace($old, $new)
+          $signature = 'void FlightAxis::exchange_data(const struct sitl_input &input)'
+          $index = -1
 
-          [System.IO.File]::WriteAllText(
+          for ($i = 0; $i -lt $lines.Count; $i++) {
+              if ($lines[$i].Trim() -eq $signature) {
+                  $index = $i
+                  break
+              }
+          }
+
+          if ($index -lt 0) {
+              throw "FlightAxis diagnostic patch FAILED: exchange_data() not found."
+          }
+
+          if (($index + 1) -ge $lines.Count) {
+              throw "FlightAxis diagnostic patch FAILED: unexpected end of file."
+          }
+
+          if ($lines[$index + 1].Trim() -ne '{') {
+              throw "FlightAxis diagnostic patch FAILED: opening brace not found after exchange_data()."
+          }
+
+          $diagnostic = [string[]]@(
+              '    static uint16_t servo_debug_counter;'
+              ''
+              '    if (++servo_debug_counter >= 50) {'
+              '        servo_debug_counter = 0;'
+              '        printf("FA_SERVO: %u %u %u %u\n",'
+              '               unsigned(input.servos[0]),'
+              '               unsigned(input.servos[1]),'
+              '               unsigned(input.servos[2]),'
+              '               unsigned(input.servos[3]));'
+              '    }'
+              ''
+          )
+
+          $lines.InsertRange($index + 2, $diagnostic)
+
+          [System.IO.File]::WriteAllLines(
               $path,
-              $text,
+              $lines,
               [System.Text.UTF8Encoding]::new($false)
           )
 
           Write-Host "=== FlightAxis diagnostic patch applied ==="
+
+          Select-String -Path $path -Pattern "FA_SERVO" -Context 6,6
+
           git diff -- libraries/SITL/SIM_FlightAxis.cpp
 
-      # Та же Cygwin/Python 3.9 среда, на которой
-      # у вас уже успешно собралась Plane 4.5.7.
       - name: Install Cygwin
         uses: cygwin/cygwin-install-action@v6
         with:
@@ -155,12 +163,12 @@ jobs:
           done &&
           git describe --tags --always > artifacts/version.txt &&
           git log -1 > artifacts/git.txt &&
-          git diff -- libraries/SITL/SIM_FlightAxis.cpp > artifacts/flightaxis_patch.diff &&
+          git diff -- libraries/SITL/SIM_FlightAxis.cpp > artifacts/flightaxis_diagnostic.diff &&
           ls -la artifacts
 
       - name: Upload Plane 4.5.7 binaries
         uses: actions/upload-artifact@v4
         with:
-          name: Plane-4.5.7-Cygwin-SITL-FlightAxis-Patched
+          name: Plane-4.5.7-Cygwin-SITL-Diagnostic
           path: artifacts
           retention-days: 7
